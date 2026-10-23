@@ -59,6 +59,8 @@ class SiteChain(ChainBase):
             "star-space.net": self.__indexphp_test,
             "yemapt.org": self.__yema_test,
             "hddolby.com": self.__hddolby_test,
+            # 高清杜比换域名后，站点测试仍按新域名兜底
+            "uhddolby.com": self.__hddolby_test,
             "rousi.pro": self.__rousi_test,
             "sunnypt.top": self.__sunnypt_test,
         }
@@ -71,7 +73,7 @@ class SiteChain(ChainBase):
         """
         userdata: SiteUserData = self.run_module("refresh_userdata", site=site)
         if userdata:
-            SiteOper().update_userdata(domain=StringUtils.get_url_domain(site.get("domain")),
+            SiteOper().update_userdata(domain=SiteUtils.normalize_domain(site.get("domain")),
                                        name=site.get("name"),
                                        payload=userdata.model_dump())
             # 发送事件
@@ -259,7 +261,7 @@ class SiteChain(ChainBase):
         :param site: SunnyPT 站点配置
         :return: 是否可用及状态信息
         """
-        indexer = SitesHelper().get_indexer(site.domain) or {}
+        indexer = SitesHelper().get_indexer(SiteUtils.normalize_domain(site.domain)) or {}
         api_url = str(
             indexer.get("api_url") or "https://api.sunnypt.top/api/v1/mp"
         ).rstrip("/")

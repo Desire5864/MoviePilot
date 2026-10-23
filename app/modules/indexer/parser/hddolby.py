@@ -43,8 +43,8 @@ class HDDolbySiteUserInfo(SiteParserBase):
         """
         获取站点页面地址
         """
-        # 更换api地址
-        self._base_url = f"https://api.{StringUtils.get_url_domain(self._base_url)}"
+        # 更换api地址（杜比已更名 uhddolby.com，API 位于 www 子域）
+        self._base_url = f"https://www.{StringUtils.get_url_domain(self._base_url)}"
         self._user_traffic_page = None
         self._user_detail_page = None
         self._user_basic_page = "api/v1/user/data"

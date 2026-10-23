@@ -149,6 +149,18 @@ class RssHelper:
                 "exp": 180
             }
         },
+        # 高清杜比换域名后，RSS 配置按新域名命中同一套参数
+        "uhddolby.com": {
+            "xpath": "//a[@class='faqlink']/@href",
+            "url": "getrss.php",
+            "params": {
+                "inclbookmarked": 0,
+                "itemsmalldescr": 1,
+                "showrows": 50,
+                "search_mode": 1,
+                "exp": 180
+            }
+        },
         "hdhome.org": {
             "xpath": "//a[@class='faqlink']/@href",
             "url": "getrss.php",

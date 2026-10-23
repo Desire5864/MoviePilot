@@ -31,6 +31,7 @@ from app.helper.sites import SitesHelper  # noqa
 from app.log import logger
 from app.scheduler import Scheduler
 from app.schemas.types import SystemConfigKey, EventType
+from app.utils.site import SiteUtils
 from app.utils.string import StringUtils
 
 router = APIRouter()
@@ -63,7 +64,7 @@ async def add_site(
         return schemas.Response(
             success=False, message="用户未通过认证，无法使用站点功能！"
         )
-    domain = StringUtils.get_url_domain(site_in.url)
+    domain = SiteUtils.normalize_domain(site_in.url)
     site_info = await SitesHelper().async_get_indexer(domain)
     if not site_info:
         return schemas.Response(
@@ -102,7 +103,8 @@ async def update_site(
     # 校正地址格式
     _scheme, _netloc = StringUtils.get_url_netloc(site_in.url)
     site_in.url = f"{_scheme}://{_netloc}/"
-    site_in.domain = StringUtils.get_url_domain(site_in.url)
+    # 域名归一：站点换域名后仍保存资源包注册键，避免保存时把 domain 写回新域名
+    site_in.domain = SiteUtils.normalize_domain(site_in.url)
     await site.async_update(db, site_in.model_dump())
     # 通知站点更新
     await eventmanager.async_send_event(
@@ -259,11 +261,15 @@ def refresh_userdata(
             status_code=404,
             detail=f"站点 {site_id} 不存在",
         )
-    indexer = SitesHelper().get_indexer(site.domain)
+    indexer = SitesHelper().get_indexer(SiteUtils.normalize_domain(site.domain))
     if not indexer:
         return schemas.Response(
             success=False, message="站点不支持索引或未通过用户认证！"
         )
+    # 站点换域名兼容：get_indexer 返回的 domain 字段取自站点 url（如杜比 uhddolby.com），
+    # 与 site.domain（资源包匹配键，如 hddolby.com）不一致，会导致用户数据保存键错位。
+    # 这里统一回 site.domain，保证保存键与查询键一致。
+    indexer["domain"] = SiteUtils.normalize_domain(site.domain)
     user_data = SiteChain().refresh_userdata(site=indexer) or {}
     return schemas.Response(success=True, data=user_data)
 
@@ -305,7 +311,7 @@ async def read_userdata(
             detail=f"站点 {site_id} 不存在",
         )
     user_datas = await SiteUserData.async_get_by_domain(
-        db, domain=site.domain, workdate=workdate
+        db, domain=SiteUtils.normalize_domain(site.domain), workdate=workdate
     )
     if not user_datas:
         return schemas.Response(success=False, data=[])
@@ -371,7 +377,7 @@ async def site_category(
             status_code=404,
             detail=f"站点 {site_id} 不存在",
         )
-    indexer = await SitesHelper().async_get_indexer(site.domain)
+    indexer = await SitesHelper().async_get_indexer(SiteUtils.normalize_domain(site.domain))
     if not indexer:
         raise HTTPException(
             status_code=404,
@@ -409,7 +415,7 @@ async def site_resource(
             detail=f"站点 {site_id} 不存在",
         )
     torrents = await TorrentsChain().async_browse(
-        domain=site.domain, keyword=keyword, cat=cat, page=page
+        domain=SiteUtils.normalize_domain(site.domain), keyword=keyword, cat=cat, page=page
     )
     if not torrents:
         return []
@@ -425,7 +431,7 @@ async def read_site_by_domain(
     """
     通过域名获取站点信息
     """
-    domain = StringUtils.get_url_domain(site_url)
+    domain = SiteUtils.normalize_domain(site_url)
     site = await Site.async_get_by_domain(db, domain)
     if not site:
         raise HTTPException(
@@ -448,7 +454,7 @@ async def read_statistic_by_domain(
     """
     通过域名获取站点统计信息
     """
-    domain = StringUtils.get_url_domain(site_url)
+    domain = SiteUtils.normalize_domain(site_url)
     sitestatistic = await SiteStatistic.async_get_by_domain(db, domain)
     if sitestatistic:
         return sitestatistic

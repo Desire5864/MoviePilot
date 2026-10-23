@@ -20,6 +20,7 @@ from app.schemas import TorrentInfo
 from app.schemas.file import FileURI 
 from app.schemas.types import ModuleType, OtherModulesType
 from app.utils.http import RequestUtils
+from app.utils.site import SiteUtils
 from app.utils.system import SystemUtils
 
 
@@ -147,7 +148,7 @@ class SubtitleModule(_ModuleBase):
         # API请求方式的站点需要特殊处理
         if torrent.site is not None:
             site = SiteOper().get(torrent.site)
-            if indexer := SitesHelper().get_indexer(site.domain):
+            if indexer := SitesHelper().get_indexer(SiteUtils.normalize_domain(site.domain)):
                 if indexer.get("parser") == "mTorrent":
                     return MTorrentSpider(indexer).get_subtitle_links(
                         torrent.page_url

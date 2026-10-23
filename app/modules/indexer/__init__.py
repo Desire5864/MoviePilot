@@ -19,6 +19,7 @@ from app.modules.indexer.spider.torrentleech import TorrentLeech
 from app.modules.indexer.spider.yema import YemaSpider
 from app.schemas import SiteUserData
 from app.schemas.types import MediaType, ModuleType, OtherModulesType
+from app.utils.site import SiteUtils
 from app.utils.string import StringUtils
 
 SPIDER_PARSER_CLASSES = {
@@ -105,7 +106,7 @@ class IndexerModule(_ModuleBase):
             return False
 
         # 站点流控
-        state, msg = SitesHelper().check(StringUtils.get_url_domain(site.get("domain")))
+        state, msg = SitesHelper().check(SiteUtils.normalize_domain(site.get("domain")))
         if state:
             logger.warn(msg)
             return False
@@ -129,7 +130,7 @@ class IndexerModule(_ModuleBase):
         """
         索引器统计
         """
-        domain = StringUtils.get_url_domain(site.get("domain"))
+        domain = SiteUtils.normalize_domain(site.get("domain"))
         if error_flag:
             SiteOper().fail(domain)
         else:
@@ -140,7 +141,7 @@ class IndexerModule(_ModuleBase):
         """
         异步索引器统计
         """
-        domain = StringUtils.get_url_domain(site.get("domain"))
+        domain = SiteUtils.normalize_domain(site.get("domain"))
         if error_flag:
             await SiteOper().async_fail(domain)
         else:
@@ -609,7 +610,7 @@ class IndexerModule(_ModuleBase):
             site_obj.parse()
             logger.debug(f"站点 {site.get('name')} 数据解析完成")
             return SiteUserData(
-                domain=StringUtils.get_url_domain(site.get("url")),
+                domain=SiteUtils.normalize_domain(site.get("domain") or site.get("url")),
                 userid=site_obj.userid,
                 username=site_obj.username,
                 user_level=site_obj.user_level,

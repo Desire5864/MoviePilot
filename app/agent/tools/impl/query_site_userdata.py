@@ -9,6 +9,7 @@ from app.agent.tools.base import MoviePilotTool
 from app.agent.tools.tags import ToolTag
 from app.db.site_oper import SiteOper
 from app.log import logger
+from app.utils.site import SiteUtils
 
 SITE_USERDATA_DETAIL_PREVIEW_LIMIT = 10
 
@@ -71,7 +72,7 @@ class QuerySiteUserdataTool(MoviePilotTool):
                 )
 
             user_data_list = await site_oper.async_get_userdata_by_domain(
-                domain=site.domain, workdate=workdate
+                domain=SiteUtils.normalize_domain(site.domain), workdate=workdate
             )
 
             if not user_data_list:

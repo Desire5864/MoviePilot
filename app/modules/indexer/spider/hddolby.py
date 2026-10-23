@@ -70,6 +70,10 @@ class HddolbySpider:
             self._indexerid = indexer.get('id')
             self._domain = indexer.get('domain')
             self._domain_host = StringUtils.get_url_domain(self._domain)
+            # 杜比站点已从 hddolby.com 更名 uhddolby.com，API 位于 www 子域（原 api 子域已失效）
+            if self._domain_host in ("hddolby.com", "uhddolby.com"):
+                self._domain = "https://www.uhddolby.com/"
+                self._domain_host = "www.uhddolby.com"
             self._name = indexer.get('name')
             if indexer.get('proxy'):
                 self._proxy = settings.PROXY
@@ -77,7 +81,7 @@ class HddolbySpider:
             self._ua = indexer.get('ua')
             self._apikey = indexer.get('apikey')
             self._timeout = indexer.get('timeout') or 15
-            self._searchurl = f"https://api.{self._domain_host}/api/v1/torrent/search"
+            self._searchurl = f"https://{self._domain_host}/api/v1/torrent/search"
             self._pageurl = f"{self._domain}details.php?id=%s&hit=1"
 
     def __get_params(self, keyword: str, mtype: MediaType = None, page: Optional[int] = 0) -> dict:

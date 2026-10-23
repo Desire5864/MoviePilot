@@ -5,6 +5,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from lxml import etree
 
+from app.core.config import settings
+from app.helper.cloudflare import under_challenge
 from app.log import logger
 from app.modules.indexer.parser import SiteParserBase, SiteSchema
 from app.utils.string import StringUtils
@@ -16,6 +18,10 @@ class NexusPhpSiteUserInfo(SiteParserBase):
     """
 
     schema = SiteSchema.NexusPhp
+
+    # 当前活动中的做种/下载数（做种列表页被反爬拦截时兜底）
+    _activity_seeding = 0
+    _activity_leeching = 0
 
     def _parse_site_page(self, html_text: str):
         html_text = self._prepare_html_text(html_text)
@@ -113,9 +119,32 @@ class NexusPhpSiteUserInfo(SiteParserBase):
             2).strip() else 0
         html = etree.HTML(html_text)
         try:
+            # Depth Studio 等自定义主题：上传/下载量在 info-stat 卡片中，
+            # 数值与单位分处两个 span，普通文本正则会因标签穿插而取不到
+            stat_upload = self._parse_info_stat_size(html, "color_uploaded")
+            stat_download = self._parse_info_stat_size(html, "color_downloaded")
+            if stat_upload is not None:
+                self.upload = stat_upload
+            if stat_download is not None:
+                self.download = stat_download
+            if (stat_upload is not None or stat_download is not None) and not ratio_match:
+                self.ratio = round(self.upload / self.download, 3) if self.download else 0
+
+            # 当前活动中的做种/下载数（做种列表页被反爬拦截时用于兜底）
+            self._activity_seeding = self._parse_activity_count(html, "seeding")
+            self._activity_leeching = self._parse_activity_count(html, "leeching")
+
             has_ucoin, self.bonus = self._parse_ucoin(html)
             if has_ucoin:
                 return
+            # mybonus 链接 title 中通常带精确值（如 title="茉莉: 111,693.3"），
+            # 链接文本可能是 111.6K 这类缩写，优先取 title 避免精度丢失
+            title_texts = html.xpath('//a[contains(@href,"mybonus")]/@title') if html is not None else []
+            for title_text in title_texts:
+                title_match = re.search(r"[：:]\s*([\d,]+(?:\.\d+)?)", str(title_text))
+                if title_match:
+                    self.bonus = StringUtils.str_float(title_match.group(1).replace(",", ""))
+                    return
             tmps = html.xpath('//a[contains(@href,"mybonus")]/text()') if html is not None else None
             if tmps:
                 bonus_text = str(tmps[0]).strip()
@@ -164,6 +193,56 @@ class NexusPhpSiteUserInfo(SiteParserBase):
                 copper = copper if copper else 0
                 return True, gold * 100 * 100 + silver * 100 + copper
         return False, 0.0
+
+    @staticmethod
+    def _parse_info_stat_size(html, marker: str) -> Optional[int]:
+        """
+        解析 info-stat 卡片中的容量值（如 Depth Studio 的上传量/下载量）。
+
+        HTML 形如：
+            <span class="info-stat-label color_uploaded">上传量</span>
+            <span class="info-stat-value">1.404 <span class="info-stat-unit">TB</span></span>
+
+        :param html: lxml 文档
+        :param marker: color_uploaded 或 color_downloaded
+        :return: 字节数，未匹配到返回 None
+        """
+        if not StringUtils.is_valid_html_element(html):
+            return None
+        for node in html.xpath(f'//*[contains(@class, "{marker}")]'):
+            value_nodes = node.xpath(
+                'following-sibling::*[contains(@class, "info-stat-value")][1]'
+            )
+            if not value_nodes:
+                continue
+            text = value_nodes[0].xpath("string(.)").strip()
+            if not text or not re.search(r"\d", text):
+                continue
+            if re.search(r"[KMGTPE]?B\b", text, re.IGNORECASE) or text.isdigit():
+                return StringUtils.num_filesize(text)
+        return None
+
+    @staticmethod
+    def _parse_activity_count(html, kind: str) -> int:
+        """
+        解析「当前活动」中的做种/下载数量，用于做种列表页被反爬拦截时兜底。
+
+        :param html: lxml 文档
+        :param kind: seeding 或 leeching
+        :return: 数量，未匹配到返回 0
+        """
+        if not StringUtils.is_valid_html_element(html):
+            return 0
+        texts = html.xpath(
+            f'//a[contains(@href,"getusertorrentlist") and contains(@href,"type={kind}")]/text()'
+        )
+        if not texts:
+            texts = html.xpath(f'//a[contains(@href,"type={kind}")]/text()')
+        for text in texts:
+            match = re.search(r"(\d[\d,]*)", str(text))
+            if match:
+                return StringUtils.str_int(match.group(1).replace(",", ""))
+        return 0
 
     def _parse_user_torrent_seeding_info(self, html_text: str, multi_page: Optional[bool] = False) -> Optional[str]:
         """
@@ -265,6 +344,66 @@ class NexusPhpSiteUserInfo(SiteParserBase):
         query_params["userid"] = userid
         query_params.setdefault("type", "seeding")
         return urlunsplit(parsed_url._replace(query=urlencode(query_params)))
+
+    def _parse_seeding_pages(self):
+        """
+        解析做种页面。
+
+        做种列表页被站点反爬拦截（如猫站返回 403 Forbidden）时，列表解析结果为空，
+        此时用用户面板「当前活动」中的做种/下载数兜底，避免做种数显示为 0。
+        """
+        super()._parse_seeding_pages()
+        if not self.seeding and self._activity_seeding:
+            self.seeding = self._activity_seeding
+            logger.info(
+                f"{self._site_name} 做种列表解析为空，使用当前活动做种数兜底：{self.seeding}"
+            )
+        if not self.leeching and self._activity_leeching:
+            self.leeching = self._activity_leeching
+
+    def _get_page_content(
+            self,
+            url: str,
+            params: dict = None,
+            headers: dict = None,
+            method: Optional[str] = None,
+    ):
+        """
+        获取页面内容。
+
+        部分站点的做种列表页有反爬（普通请求返回 403 Forbidden），
+        这里在解析做种列表时回退到浏览器渲染，其它页面保持原有请求方式。
+        """
+        content = super()._get_page_content(
+            url=url, params=params, headers=headers, method=method
+        )
+        if "getusertorrentlist" not in str(url):
+            return content
+        if content and not under_challenge(content) and "Forbidden" not in content[:1000]:
+            return content
+        rendered = self._get_rendered_page(url)
+        return rendered or content
+
+    def _get_rendered_page(self, url: str) -> Optional[str]:
+        """
+        使用浏览器渲染获取页面源码，用于绕过做种列表页的反爬。
+
+        :param url: 页面地址
+        :return: 页面源码，失败返回 None
+        """
+        try:
+            from app.helper.browser import PlaywrightHelper
+            logger.info(f"{self._site_name} 做种列表被反爬拦截，尝试浏览器渲染：{url}")
+            return PlaywrightHelper().get_page_source(
+                url=url,
+                cookies=self._site_cookie,
+                ua=self._ua,
+                proxies=settings.PROXY_SERVER if self._proxy else None,
+                timeout=60,
+            )
+        except Exception as err:
+            logger.warn(f"{self._site_name} 做种列表浏览器渲染失败：{err}")
+            return None
 
     def _parse_user_detail_info(self, html_text: str):
         """
@@ -446,6 +585,6 @@ class NexusPhpSiteUserInfo(SiteParserBase):
     def _fixup_traffic_info(self, html):
         # fixup bonus
         if not self.bonus:
-            bonus_text = html.xpath('//tr/td[text()="魔力值" or text()="猫粮"]/following-sibling::td[1]/text()')
+            bonus_text = html.xpath('//tr/td[text()="魔力值" or text()="猫粮" or text()="茉莉"]/following-sibling::td[1]/text()')
             if bonus_text:
                 self.bonus = StringUtils.str_float(bonus_text[0].strip())
