@@ -131,7 +131,9 @@ class TorrentInfo:
         """
         返回免费剩余时间
         """
-        if not self.freedate:
+        # 部分站点无促销时返回 0000-00-00 00:00:00，不能当日期解析，
+        # 否则 diff_time_str 失败后会原样回显，前端显示成零日期标签
+        if not self.freedate or str(self.freedate).startswith("0000-00-00"):
             return ""
         return StringUtils.diff_time_str(self.freedate)
 

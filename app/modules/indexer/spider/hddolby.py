@@ -153,6 +153,13 @@ class HddolbySpider:
             for labelId in torrentLabelIds:
                 if self._labels.get(labelId) is not None:
                     torrentLabels.append(self._labels.get(labelId))
+            # 促销结束时间：站点在无促销时返回 0000-00-00 00:00:00，
+            # 归一为 None，避免前端把它当免费剩余时间显示成零日期
+            promotion_until = result.get('promotion_until')
+            if not result.get('promotion_time_type') \
+                    or not promotion_until \
+                    or str(promotion_until).startswith('0000-00-00'):
+                promotion_until = None
             # 种子信息
             torrent = {
                 'title': result.get('name'),
@@ -165,7 +172,7 @@ class HddolbySpider:
                 'grabs': result.get('times_completed'),
                 'downloadvolumefactor': self.__get_downloadvolumefactor(result.get('promotion_time_type')),
                 'uploadvolumefactor': self.__get_uploadvolumefactor(result.get('promotion_time_type')),
-                'freedate': result.get('promotion_until'),
+                'freedate': promotion_until,
                 'page_url': self._pageurl % result.get('id'),
                 'labels': torrentLabels,
                 'category': category
