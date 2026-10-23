@@ -153,6 +153,9 @@ class HddolbySpider:
             for labelId in torrentLabelIds:
                 if self._labels.get(labelId) is not None:
                     torrentLabels.append(self._labels.get(labelId))
+            # 促销码：sp_state 才是 NexusPHP 的实际优惠码（2=免费、5=50%…），
+            # promotion_time_type 在永久优惠时会返回 0，不能作为唯一依据
+            promotion_code = result.get('sp_state') or result.get('promotion_time_type') or 0
             # 促销结束时间：站点在无促销时返回 0000-00-00 00:00:00，
             # 归一为 None，避免前端把它当免费剩余时间显示成零日期
             promotion_until = result.get('promotion_until')
@@ -170,8 +173,8 @@ class HddolbySpider:
                 'seeders': result.get('seeders'),
                 'peers': result.get('leechers'),
                 'grabs': result.get('times_completed'),
-                'downloadvolumefactor': self.__get_downloadvolumefactor(result.get('promotion_time_type')),
-                'uploadvolumefactor': self.__get_uploadvolumefactor(result.get('promotion_time_type')),
+                'downloadvolumefactor': self.__get_downloadvolumefactor(promotion_code),
+                'uploadvolumefactor': self.__get_uploadvolumefactor(promotion_code),
                 'freedate': promotion_until,
                 'page_url': self._pageurl % result.get('id'),
                 'labels': torrentLabels,
