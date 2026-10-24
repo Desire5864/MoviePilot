@@ -1,10 +1,12 @@
 import json
 import re
+import threading
 import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Generator, Tuple, Any
 
+import requests
 from requests import Response
 
 from app import schemas
@@ -42,6 +44,54 @@ class Emby:
         self.serverid = self.get_server_id()
         self._sync_libraries = sync_libraries or []
 
+    # ---- 连接池复用 ----------------------------------------------------
+    # 背景：此前每个 API 调用都新建 requests.Session，等于每次请求都建一条新
+    # TCP 连接，媒体库全量同步（2 万+ 条目）时会在几十秒内制造数千个
+    # TIME_WAIT，把本地端口（32768-60999）打光，导致面板健康检查也建不出
+    # 连接而整机假死。这里按 host + 线程复用连接池，由 urllib3 托管连接
+    # 生命周期，避免 CLOSE_WAIT/TIME_WAIT 堆积。
+    _tls = threading.local()
+
+    def _get_session(self) -> Optional[Any]:
+        """
+        取当前线程、当前 host 的复用 Session。
+        """
+        host = self._host or ""
+        store = getattr(Emby._tls, "sessions", None)
+        if store is None:
+            store = {}
+            Emby._tls.sessions = store
+        sess = store.get(host)
+        if sess is not None:
+            return sess
+        try:
+            sess = requests.Session()
+            # Emby 属内网直连，不走环境变量里的全局代理
+            sess.trust_env = False
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=8,
+                pool_maxsize=32,
+                max_retries=0,
+                pool_block=False,
+            )
+            sess.mount("http://", adapter)
+            sess.mount("https://", adapter)
+            store[host] = sess
+            return sess
+        except Exception as err:
+            logger.debug(f"创建 Emby 连接池失败：{err}")
+            return None
+
+    def _req(self, **kwargs) -> RequestUtils:
+        """
+        统一构造 RequestUtils，并注入复用的 Session。
+        """
+        session = self._get_session()
+        if session is not None:
+            kwargs.setdefault("session", session)
+        return RequestUtils(**kwargs)
+
+
     def is_inactive(self) -> bool:
         """
         判断是否需要重连
@@ -68,7 +118,7 @@ class Emby:
             'api_key': self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 return res.json()
             else:
@@ -89,7 +139,7 @@ class Emby:
             'api_key': self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 library_items = res.json().get("Items")
                 librarys = []
@@ -133,7 +183,7 @@ class Emby:
         url = f"{self._host}emby/Users/{user}/Views"
         params = {"api_key": self._apikey}
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 items = res.json().get("Items")
                 return items if isinstance(items, list) else None
@@ -205,7 +255,7 @@ class Emby:
             "api_key": self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 users = res.json()
                 candidate_usernames = []
@@ -237,7 +287,7 @@ class Emby:
             return None
         url = f"{self._host}emby/Users/AuthenticateByName"
         try:
-            res = RequestUtils(headers={
+            res = self._req(headers={
                 'X-Emby-Authorization': f'MediaBrowser Client="MoviePilot", '
                                         f'Device="requests", '
                                         f'DeviceId="1", '
@@ -275,7 +325,7 @@ class Emby:
         for path in ("System/Info", "emby/System/Info"):
             url = f"{self._host}{path}"
             try:
-                res = RequestUtils().get_res(url, params)
+                res = self._req().get_res(url, params)
                 if res:
                     result = res.json() or {}
                     server_id = result.get("Id") or result.get("ServerId")
@@ -298,7 +348,7 @@ class Emby:
             'api_key': self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 return res.json().get("TotalRecordCount")
             else:
@@ -320,7 +370,7 @@ class Emby:
             'api_key': self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 result = res.json()
                 return schemas.Statistic(
@@ -356,7 +406,7 @@ class Emby:
             "api_key": self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 res_items = res.json().get("Items")
                 if res_items:
@@ -394,7 +444,7 @@ class Emby:
             "api_key": self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 res_items = res.json().get("Items")
                 if res_items:
@@ -467,7 +517,7 @@ class Emby:
                 "IsMissing": "false",
                 "api_key": self._apikey
             }
-            res_json = RequestUtils().get_res(url, params)
+            res_json = self._req().get_res(url, params)
             if res_json:
                 tv_item = res_json.json()
                 res_items = tv_item.get("Items")
@@ -507,7 +557,7 @@ class Emby:
                 "IsMissing": "false",
                 "api_key": self._apikey
             }
-            res_json = RequestUtils().get_res(url, params)
+            res_json = self._req().get_res(url, params)
             if not res_json:
                 return {}
             episode_ids: Dict[int, str] = {}
@@ -536,7 +586,7 @@ class Emby:
             "api_key": self._apikey
         }
         try:
-            res = RequestUtils(timeout=10).get_res(url, params)
+            res = self._req(timeout=10).get_res(url, params)
             if res:
                 images = res.json().get("Images")
                 if images:
@@ -563,7 +613,7 @@ class Emby:
 
         url = f"{self._playhost}Items/{item_id}/Images/{image_type}"
         try:
-            res = RequestUtils().get_res(url)
+            res = self._req().get_res(url)
             if res and res.status_code != 404:
                 logger.info(f"影片图片链接:{res.url}")
                 return res.url
@@ -586,7 +636,7 @@ class Emby:
             "api_key": self._apikey
         }
         try:
-            res = RequestUtils().post_res(url, params=params)
+            res = self._req().post_res(url, params=params)
             if res:
                 return True
             else:
@@ -607,7 +657,7 @@ class Emby:
             "api_key": self._apikey
         }
         try:
-            res = RequestUtils().post_res(url, params=params)
+            res = self._req().post_res(url, params=params)
             if res:
                 return True
             else:
@@ -734,7 +784,7 @@ class Emby:
             "api_key": self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res and res.status_code == 200:
                 iteminfo = self.__format_item_info(res.json())
                 return iteminfo
@@ -760,7 +810,7 @@ class Emby:
             "api_key": self._apikey,
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if not res or res.status_code != 200:
                 return None
             total_count = res.json().get("TotalRecordCount")
@@ -794,7 +844,7 @@ class Emby:
                 "Limit": limit
             })
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if not res or res.status_code != 200:
                 return None
             items = res.json().get("Items") or []
@@ -1147,7 +1197,7 @@ class Emby:
             .replace("[APIKEY]", self._apikey or '') \
             .replace("[USER]", self.user or '')
         try:
-            return RequestUtils(content_type="application/json").get_res(url=url)
+            return self._req(content_type="application/json").get_res(url=url)
         except Exception as e:
             logger.error(f"连接Emby出错：" + str(e))
             return None
@@ -1165,7 +1215,7 @@ class Emby:
             .replace("[APIKEY]", self._apikey or '') \
             .replace("[USER]", self.user or '')
         try:
-            return RequestUtils(
+            return self._req(
                 headers=headers,
             ).post_res(url=url, data=data)
         except Exception as e:
@@ -1233,7 +1283,7 @@ class Emby:
             "api_key": self._apikey,
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 result = res.json().get("Items") or []
                 ret_resume = []
@@ -1308,7 +1358,7 @@ class Emby:
             "api_key": self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
+            res = self._req().get_res(url, params)
             if res:
                 result = res.json() or []
                 ret_latest = []
